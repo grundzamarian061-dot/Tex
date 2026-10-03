@@ -60,6 +60,45 @@ jobs:
           s = re.sub(r"(\n\s*url\s*=\s*)['\"][^'\"]+['\"]", r"\g<1>'https://files.pythonhosted.org/packages/source/f/ffpyplayer/ffpyplayer-{version}.tar.gz'", s, count=1)
           open(p, "w").write(s)
           PY
+          echo "--- kontrola patchů proti zdrojům $V ---"
+          curl -sL "https://files.pythonhosted.org/packages/source/f/ffpyplayer/ffpyplayer-$V.tar.gz" -o /tmp/ff.tgz
+          mkdir -p /tmp/ffsrc
+          tar xzf /tmp/ff.tgz -C /tmp/ffsrc --strip-components=1
+          echo "výskyty avfft ve zdrojích (0 = dobře):"
+          grep -rl "avfft" /tmp/ffsrc | wc -l
+          cd recipes/ffpyplayer
+          for P in *.patch; do
+            [ -e "$P" ] || continue
+            if patch -t --dry-run -d /tmp/ffsrc -p1 -i "$PWD/$P" > /dev/null 2>&1; then
+              echo "patch sedí: $P"
+              continue
+            fi
+            python - "$P" <<'PY2'
+          import sys
+          p = sys.argv[1]
+          out = []
+          for ln in open(p, newline="").read().split("\n"):
+              ln = ln.rstrip("\r")
+              if ln[:1] in (" ", "+", "-") and not ln.startswith(("---", "+++")):
+                  ln += "\r"
+              out.append(ln)
+          open(p, "w", newline="").write("\n".join(out))
+          PY2
+            if patch -t --dry-run -d /tmp/ffsrc -p1 -i "$PWD/$P" > /dev/null 2>&1; then
+              echo "patch sedí po převodu konců řádků: $P"
+              continue
+            fi
+            echo "patch nesedí, odstraňuji: $P"
+            rm -f "$P"
+            python - "$P" <<'PY3'
+          import re, sys
+          n = sys.argv[1]
+          s = open("__init__.py").read()
+          s = re.sub(r"['\"]" + re.escape(n) + r"['\"]\s*,?", "", s)
+          open("__init__.py", "w").write(s)
+          PY3
+          done
+          cd ../..
           echo "--- upravený recept ---"
           sed -n 1,30p recipes/ffpyplayer/__init__.py
           sed -i "/^\[app\]/a p4a.local_recipes = $GITHUB_WORKSPACE/recipes" buildozer.spec
