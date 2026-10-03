@@ -43,13 +43,27 @@ jobs:
           key: buildozer-v3-${{ github.run_id }}
           restore-keys: buildozer-v3-
 
-      - name: Nejnovější ffpyplayer (4.5.1 neumí nový FFmpeg)
+      - name: Oprava receptu ffpyplayer (nový FFmpeg + stahování z PyPI)
         shell: bash
         run: |
           V=$(curl -s https://pypi.org/pypi/ffpyplayer/json | python -c "import sys,json;print(json.load(sys.stdin)['info']['version'])")
           echo "ffpyplayer verze: $V"
-          sed -i "s/,ffpyplayer,/,ffpyplayer==$V,/" buildozer.spec
-          grep -n "^requirements" buildozer.spec
+          git clone --depth 1 -b master https://github.com/kivy/python-for-android.git /tmp/p4a
+          mkdir -p recipes
+          cp -r /tmp/p4a/pythonforandroid/recipes/ffpyplayer recipes/ffpyplayer
+          python - "$V" <<'PY'
+          import re, sys
+          v = sys.argv[1]
+          p = "recipes/ffpyplayer/__init__.py"
+          s = open(p).read()
+          s = re.sub(r"(\n\s*version\s*=\s*)['\"][^'\"]+['\"]", r"\g<1>'" + v + "'", s, count=1)
+          s = re.sub(r"(\n\s*url\s*=\s*)['\"][^'\"]+['\"]", r"\g<1>'https://files.pythonhosted.org/packages/source/f/ffpyplayer/ffpyplayer-{version}.tar.gz'", s, count=1)
+          open(p, "w").write(s)
+          PY
+          echo "--- upravený recept ---"
+          sed -n 1,30p recipes/ffpyplayer/__init__.py
+          sed -i "/^\[app\]/a p4a.local_recipes = $GITHUB_WORKSPACE/recipes" buildozer.spec
+          grep -n "local_recipes" buildozer.spec
 
       - name: Build debug APK
         shell: bash
