@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    timeout-minutes: 150
 
     steps:
       - uses: actions/checkout@v4
@@ -34,17 +34,48 @@ jobs:
           python -m pip install --upgrade pip
           pip install buildozer "cython<3" virtualenv setuptools
 
-      - name: Cache buildozer
-        uses: actions/cache@v4
+      - name: Obnovit cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             .buildozer
             ~/.buildozer
-          key: buildozer-${{ hashFiles('buildozer.spec') }}
-          restore-keys: buildozer-
+          key: buildozer-v3-${{ github.run_id }}
+          restore-keys: buildozer-v3-
+
+      - name: Nejnovější ffpyplayer (4.5.1 neumí nový FFmpeg)
+        shell: bash
+        run: |
+          V=$(curl -s https://pypi.org/pypi/ffpyplayer/json | python -c "import sys,json;print(json.load(sys.stdin)['info']['version'])")
+          echo "ffpyplayer verze: $V"
+          sed -i "s/,ffpyplayer,/,ffpyplayer==$V,/" buildozer.spec
+          grep -n "^requirements" buildozer.spec
 
       - name: Build debug APK
-        run: buildozer -v android debug
+        shell: bash
+        run: |
+          set -o pipefail
+          buildozer -v android debug 2>&1 | tee build.log
+
+      - name: Shrnutí chyby
+        if: failure()
+        shell: bash
+        run: |
+          {
+            echo '## Příčina chyby (řádky před "Command failed")'
+            echo '```'
+            grep -n -B60 "Command failed" build.log | head -90 || tail -80 build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Uložit cache (i při chybě)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .buildozer
+            ~/.buildozer
+          key: buildozer-v3-${{ github.run_id }}
 
       - name: Nahrát APK
         uses: actions/upload-artifact@v4
@@ -52,12 +83,9 @@ jobs:
           name: TEx-apk
           path: bin/*.apk
 
-      - name: Nahrát log při chybě
+      - name: Nahrát log
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: buildozer-log
-          path: |
-            .buildozer/logs
-            .buildozer/android/platform/build-*/build/*.log
-          if-no-files-found: ignore
+          name: build-log
+          path: build.log
