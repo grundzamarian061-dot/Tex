@@ -27,7 +27,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y git zip unzip autoconf automake libtool \
             pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 \
-            cmake libffi-dev libssl-dev build-essential ccache
+            cmake libffi-dev libssl-dev build-essential ccache xz-utils
 
       - name: Buildozer
         run: |
@@ -40,67 +40,78 @@ jobs:
           path: |
             .buildozer
             ~/.buildozer
-          key: buildozer-v3-${{ github.run_id }}
-          restore-keys: buildozer-v3-
+          key: buildozer-v4-${{ github.run_id }}
+          restore-keys: buildozer-v4-
 
-      - name: Oprava receptu ffpyplayer (nový FFmpeg + stahování z PyPI)
+      - name: Staré verze - ffmpeg 6.1.1 + ffpyplayer z PyPI
         shell: bash
         run: |
+          set -x
+          FF=6.1.1
           V=$(curl -s https://pypi.org/pypi/ffpyplayer/json | python -c "import sys,json;print(json.load(sys.stdin)['info']['version'])")
-          echo "ffpyplayer verze: $V"
+          echo "ffpyplayer verze: $V, ffmpeg verze: $FF"
+
           git clone --depth 1 -b master https://github.com/kivy/python-for-android.git /tmp/p4a
           mkdir -p recipes
           cp -r /tmp/p4a/pythonforandroid/recipes/ffpyplayer recipes/ffpyplayer
-          python - "$V" <<'PY'
-          import re, sys
-          v = sys.argv[1]
-          p = "recipes/ffpyplayer/__init__.py"
-          s = open(p).read()
-          s = re.sub(r"(\n\s*version\s*=\s*)['\"][^'\"]+['\"]", r"\g<1>'" + v + "'", s, count=1)
-          s = re.sub(r"(\n\s*url\s*=\s*)['\"][^'\"]+['\"]", r"\g<1>'https://files.pythonhosted.org/packages/source/f/ffpyplayer/ffpyplayer-{version}.tar.gz'", s, count=1)
-          open(p, "w").write(s)
-          PY
-          echo "--- kontrola patchů proti zdrojům $V ---"
+          cp -r /tmp/p4a/pythonforandroid/recipes/ffmpeg recipes/ffmpeg
+
+          echo "=== původní ffmpeg recept ==="
+          sed -n 1,90p recipes/ffmpeg/__init__.py
+
+          # zdrojáky pro kontrolu patchů
           curl -sL "https://files.pythonhosted.org/packages/source/f/ffpyplayer/ffpyplayer-$V.tar.gz" -o /tmp/ff.tgz
-          mkdir -p /tmp/ffsrc
-          tar xzf /tmp/ff.tgz -C /tmp/ffsrc --strip-components=1
-          echo "výskyty avfft ve zdrojích (0 = dobře):"
-          grep -rl "avfft" /tmp/ffsrc | wc -l
-          cd recipes/ffpyplayer
-          for P in *.patch; do
-            [ -e "$P" ] || continue
-            if patch -t --dry-run -d /tmp/ffsrc -p1 -i "$PWD/$P" > /dev/null 2>&1; then
-              echo "patch sedí: $P"
-              continue
-            fi
-            python - "$P" <<'PY2'
-          import sys
-          p = sys.argv[1]
-          out = []
-          for ln in open(p, newline="").read().split("\n"):
-              ln = ln.rstrip("\r")
-              if ln[:1] in (" ", "+", "-") and not ln.startswith(("---", "+++")):
-                  ln += "\r"
-              out.append(ln)
-          open(p, "w", newline="").write("\n".join(out))
-          PY2
-            if patch -t --dry-run -d /tmp/ffsrc -p1 -i "$PWD/$P" > /dev/null 2>&1; then
-              echo "patch sedí po převodu konců řádků: $P"
-              continue
-            fi
-            echo "patch nesedí, odstraňuji: $P"
-            rm -f "$P"
-            python - "$P" <<'PY3'
-          import re, sys
-          n = sys.argv[1]
-          s = open("__init__.py").read()
-          s = re.sub(r"['\"]" + re.escape(n) + r"['\"]\s*,?", "", s)
-          open("__init__.py", "w").write(s)
-          PY3
-          done
-          cd ../..
-          echo "--- upravený recept ---"
-          sed -n 1,30p recipes/ffpyplayer/__init__.py
+          mkdir -p /tmp/ffsrc && tar xzf /tmp/ff.tgz -C /tmp/ffsrc --strip-components=1
+          curl -sL "https://ffmpeg.org/releases/ffmpeg-$FF.tar.xz" -o /tmp/ffm.txz
+          mkdir -p /tmp/ffmsrc && tar xJf /tmp/ffm.txz -C /tmp/ffmsrc --strip-components=1
+          ls /tmp/ffmsrc | head -5
+          test -f /tmp/ffmsrc/libavcodec/avfft.h && echo "ffmpeg $FF MÁ avfft.h - dobře"
+
+          cat > /tmp/fixrecipe.py <<'PYEOF'
+          import re, sys, os, subprocess, glob
+          recipe_dir, src_dir, version, url = sys.argv[1:5]
+          init = os.path.join(recipe_dir, "__init__.py")
+          s = open(init).read()
+          s = re.sub(r"(\n\s*version\s*=\s*)['\"][^'\"]+['\"]", r"\g<1>'" + version + "'", s, count=1)
+          if url != "-":
+              s = re.sub(r"(\n\s*url\s*=\s*)['\"][^'\"]+['\"]", r"\g<1>'" + url + "'", s, count=1)
+          open(init, "w").write(s)
+
+          def ok(p):
+              r = subprocess.run(["patch", "-t", "--dry-run", "-d", src_dir, "-p1", "-i", os.path.abspath(p)],
+                                 capture_output=True)
+              return r.returncode == 0
+
+          for p in glob.glob(os.path.join(recipe_dir, "**", "*.patch"), recursive=True):
+              if ok(p):
+                  print("patch sedi:", p)
+                  continue
+              out = []
+              for ln in open(p, newline="").read().split("\n"):
+                  ln = ln.rstrip("\r")
+                  if ln[:1] in (" ", "+", "-") and not ln.startswith(("---", "+++")):
+                      ln += "\r"
+                  out.append(ln)
+              open(p, "w", newline="").write("\n".join(out))
+              if ok(p):
+                  print("patch sedi po prevodu radku:", p)
+                  continue
+              print("patch NESEDI, odstranuji:", p)
+              os.remove(p)
+              base = re.escape(os.path.basename(p))
+              s = open(init).read()
+              s = re.sub(r"['\"][^'\"]*" + base + r"['\"]\s*,?", "", s)
+              open(init, "w").write(s)
+          PYEOF
+
+          python /tmp/fixrecipe.py recipes/ffpyplayer /tmp/ffsrc "$V" "https://files.pythonhosted.org/packages/source/f/ffpyplayer/ffpyplayer-{version}.tar.gz"
+          python /tmp/fixrecipe.py recipes/ffmpeg /tmp/ffmsrc "$FF" "-"
+
+          echo "=== upravený ffmpeg recept ==="
+          sed -n 1,90p recipes/ffmpeg/__init__.py
+          echo "=== upravený ffpyplayer recept ==="
+          sed -n 1,40p recipes/ffpyplayer/__init__.py
+
           sed -i "/^\[app\]/a p4a.local_recipes = $GITHUB_WORKSPACE/recipes" buildozer.spec
           grep -n "local_recipes" buildozer.spec
 
@@ -128,7 +139,7 @@ jobs:
           path: |
             .buildozer
             ~/.buildozer
-          key: buildozer-v3-${{ github.run_id }}
+          key: buildozer-v4-${{ github.run_id }}
 
       - name: Nahrát APK
         uses: actions/upload-artifact@v4
