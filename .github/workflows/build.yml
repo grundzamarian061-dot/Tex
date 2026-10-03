@@ -40,10 +40,10 @@ jobs:
           path: |
             .buildozer
             ~/.buildozer
-          key: buildozer-v4-${{ github.run_id }}
-          restore-keys: buildozer-v4-
+          key: buildozer-v5-${{ github.run_id }}
+          restore-keys: buildozer-v5-
 
-      - name: Staré verze - ffmpeg 6.1.1 + ffpyplayer z PyPI
+      - name: Staré verze - Python 3.11, ffmpeg 6.1.1, ffpyplayer z PyPI
         shell: bash
         run: |
           set -x
@@ -113,7 +113,9 @@ jobs:
           sed -n 1,40p recipes/ffpyplayer/__init__.py
 
           sed -i "/^\[app\]/a p4a.local_recipes = $GITHUB_WORKSPACE/recipes" buildozer.spec
-          grep -n "local_recipes" buildozer.spec
+          # Python 3.14 (výchozí v p4a) neumí přeložit Kivy 2.3.0 -> starší Python 3.11
+          sed -i "s/^requirements = python3,/requirements = python3==3.11.9,hostpython3==3.11.9,/" buildozer.spec
+          grep -n "local_recipes\|^requirements" buildozer.spec
 
       - name: Build debug APK
         shell: bash
@@ -139,7 +141,7 @@ jobs:
           path: |
             .buildozer
             ~/.buildozer
-          key: buildozer-v4-${{ github.run_id }}
+          key: buildozer-v5-${{ github.run_id }}
 
       - name: Nahrát APK
         uses: actions/upload-artifact@v4
